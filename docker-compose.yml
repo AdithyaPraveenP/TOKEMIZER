@@ -1,0 +1,16 @@
+services:
+  router:
+    build: .
+    container_name: router
+    env_file:
+      - .env
+    volumes:
+      - ./test_input:/input
+      - ./test_output:/output
+      # The cache volume mount is intentionally removed so the container uses
+      # the 1.5GB Qwen model baked into the image during the Dockerfile build.
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 4G

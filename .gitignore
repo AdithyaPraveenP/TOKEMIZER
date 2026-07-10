@@ -1,0 +1,27 @@
+# Ignore node_modules
+node_modules/
+myenv/
+test/
+test-results/
+playwright-report/
+# Ignore compiled Python files
+*.pyc
+
+.venv/
+
+certs/
+.env
+backend_code.txt
+codebase.txt
+custom_llm2.py
+DEPLOY.txt
+len.txt
+llm6.1.py
+model_all.txt
+quick.txt
+tree.txt
+
+db.sqlite3
+local-certs/
+docker-compose.override.yml
+codebase_before_doc.txt
