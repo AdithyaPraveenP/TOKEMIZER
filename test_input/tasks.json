@@ -1,0 +1,14 @@
+[
+  {
+    "task_id": "task-simple",
+    "prompt": "What is the capital of Japan?"
+  },
+  {
+    "task_id": "task-medium",
+    "prompt": "Explain the difference between a list and a tuple in Python in three sentences."
+  },
+  {
+    "task_id": "task-complex",
+    "prompt": "Design a highly available microservices architecture for an e-commerce platform handling 10,000 requests per second. Include database sharding, caching strategies, and load balancing techniques."
+  }
+]

@@ -5,7 +5,7 @@ from typing import Dict, Any
 
 logger = logging.getLogger(__name__)
 
-QWEN_URL = os.environ.get("QWEN_URL", "http://qwen-server:8000")
+QWEN_URL = os.environ.get("QWEN_URL", "http://127.0.0.1:8000")
 
 
 class QwenClient:
@@ -13,7 +13,7 @@ class QwenClient:
 
     def __init__(self, base_url: str = QWEN_URL):
         self.base_url = base_url
-        self.client = httpx.Client(timeout=180)
+        self.client = httpx.Client(timeout=600)
 
     def classify(self, query: str) -> Dict[str, Any]:
         """Classify query complexity"""
