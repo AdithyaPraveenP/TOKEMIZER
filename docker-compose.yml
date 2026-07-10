@@ -7,8 +7,8 @@ services:
     volumes:
       - ./test_input:/input
       - ./test_output:/output
-      # The cache volume mount is intentionally removed so the container uses
-      # the 1.5GB Qwen model baked into the image during the Dockerfile build.
+      # Live Volume Bridge: Mirrors local Python changes instantly into the container
+      - ./router/src:/app/src
     deploy:
       resources:
         limits:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unified Entrypoint - Qwen pre-downloaded, starts fast"""
+"""Unified Entrypoint - Qwen pre-downloaded, starts fast with Data Hot-Reload"""
 
 import json
 import os
@@ -26,34 +26,6 @@ PRACTICE_TASKS = [
     {
         "task_id": "practice-01",
         "prompt": "What is the capital of Australia, and what body of water is it near?",
-    },
-    {
-        "task_id": "practice-02",
-        "prompt": "A store has 240 items. It sells 15% on Monday and 60 more on Tuesday. How many items remain?",
-    },
-    {
-        "task_id": "practice-03",
-        "prompt": "Classify the sentiment of this review: The battery life is great, but the screen scratches too easily.",
-    },
-    {
-        "task_id": "practice-04",
-        "prompt": "Summarize the following in exactly one sentence: Artificial intelligence is transforming how businesses operate.",
-    },
-    {
-        "task_id": "practice-05",
-        "prompt": "Extract all named entities and their types from: Maria Sanchez joined Fireworks AI in Berlin last March.",
-    },
-    {
-        "task_id": "practice-06",
-        "prompt": "This function should return the max of a list but has a bug: def get_max(nums): return nums[0]. Find and fix it.",
-    },
-    {
-        "task_id": "practice-07",
-        "prompt": "Three friends, Sam, Jo, and Lee, each own a different pet: cat, dog, bird. Sam does not own the bird. Jo owns the dog. Who owns the cat?",
-    },
-    {
-        "task_id": "practice-08",
-        "prompt": "Write a Python function that returns the second-largest number in a list, handling duplicates correctly.",
     },
 ]
 
@@ -84,7 +56,7 @@ def start_qwen_server():
 
 
 def wait_for_qwen_server(timeout_seconds=600):
-    """Wait for Qwen server to be ready (2 minutes max)"""
+    """Wait for Qwen server to be ready (10 minutes max)"""
     logger.info(f"⏳ Waiting for Qwen server (timeout: {timeout_seconds}s)...")
 
     start_time = time.time()
@@ -125,6 +97,43 @@ def save_results(results: list) -> None:
     logger.info(f"✅ Saved {len(results)} results to {OUTPUT_PATH}")
 
 
+def process_batch(agent: RoutingAgent):
+    """Process a single batch of tasks"""
+    tasks = load_tasks()
+    logger.info(f"📝 Loaded {len(tasks)} tasks for processing")
+
+    results = []
+    for i, task in enumerate(tasks, 1):
+        task_id = task.get("task_id", f"task-{i}")
+        prompt = task.get("prompt", "")
+
+        logger.info(f"\n📌 [{i}/{len(tasks)}] {task_id}")
+
+        if not prompt:
+            results.append({"task_id": task_id, "answer": "Error: Empty prompt"})
+            continue
+
+        result = agent.process_query(prompt)
+        results.append(
+            {
+                "task_id": task_id,
+                "answer": result.get("response", "Error: No response"),
+            }
+        )
+
+    save_results(results)
+
+    metrics = agent.get_metrics()
+    logger.info("\n" + "=" * 60)
+    logger.info("📊 Batch Summary:")
+    logger.info(f"   Queries processed: {metrics.get('total_queries', 0)}")
+    logger.info(f"   Local queries: {metrics.get('local_queries', 0)} (0 tokens!)")
+    logger.info(f"   Fireworks queries: {metrics.get('fireworks_queries', 0)}")
+    logger.info(f"   Total tokens: {metrics.get('total_tokens', 0)}")
+    logger.info(f"   Total cost: ${metrics.get('total_cost', 0.0):.6f}")
+    logger.info("=" * 60)
+
+
 def main():
     logger.info("=" * 60)
     logger.info("🚀 Hybrid Token Router - AMD Hackathon ACT II")
@@ -137,66 +146,54 @@ def main():
         logger.error(f"Missing required env vars: {missing}")
         sys.exit(1)
 
-    logger.info(f"Base URL: {os.environ.get('FIREWORKS_BASE_URL')}")
-    logger.info(f"Allowed Models: {os.environ.get('ALLOWED_MODELS', 'default')}")
-
     try:
-        # Step 1: Start Qwen server (model already in image)
+        # Step 1: Start Qwen server
         qwen_process = start_qwen_server()
 
-        # Step 2: Wait for Qwen to be ready (2 min max)
+        # Step 2: Wait for Qwen to be ready
         if not wait_for_qwen_server(timeout_seconds=600):
             logger.error("❌ Qwen server failed to start. Exiting.")
             qwen_process.terminate()
             sys.exit(1)
 
-        # Step 3: Process tasks
-        tasks = load_tasks()
-        logger.info(f"📝 Loaded {len(tasks)} tasks")
-
+        # Step 3: Initialize Agent
         agent = RoutingAgent()
-        logger.info("✅ Agent ready")
+        logger.info("✅ Agent ready. Watching for file changes...")
 
-        results = []
-        for i, task in enumerate(tasks, 1):
-            task_id = task.get("task_id", f"task-{i}")
-            prompt = task.get("prompt", "")
+        # Step 4: Infinite Data-Watcher Loop
+        last_mtime = 0
+        while True:
+            try:
+                # Check if tasks.json exists and get its last modified time
+                if INPUT_PATH.exists():
+                    current_mtime = os.path.getmtime(INPUT_PATH)
+                    if current_mtime > last_mtime:
+                        logger.info("🔄 Detected change in tasks.json. Processing...")
+                        process_batch(agent)
+                        last_mtime = current_mtime
 
-            logger.info(f"\n📌 [{i}/{len(tasks)}] {task_id}")
+                time.sleep(2)  # Sleep for 2 seconds before checking again
 
-            if not prompt:
-                results.append({"task_id": task_id, "answer": "Error: Empty prompt"})
-                continue
+            except KeyboardInterrupt:
+                logger.info("🛑 Shutting down gracefully...")
+                break
+            except Exception as loop_err:
+                logger.error(f"Error in processing loop: {loop_err}")
+                time.sleep(5)  # Back off slightly on error
 
-            result = agent.process_query(prompt)
-            results.append(
-                {
-                    "task_id": task_id,
-                    "answer": result.get("response", "Error: No response"),
-                }
-            )
-
-        save_results(results)
-
-        metrics = agent.get_metrics()
-        logger.info("\n" + "=" * 60)
-        logger.info("📊 Summary:")
-        logger.info(f"   Queries processed: {metrics.get('total_queries', 0)}")
-        logger.info(f"   Local queries: {metrics.get('local_queries', 0)} (0 tokens!)")
-        logger.info(f"   Fireworks queries: {metrics.get('fireworks_queries', 0)}")
-        logger.info(f"   Total tokens: {metrics.get('total_tokens', 0)}")
-        logger.info(f"   Total cost: ${metrics.get('total_cost', 0.0):.6f}")
-        logger.info("=" * 60)
-        logger.info("✅ Done! Exiting with code 0")
-
-        agent.close()
-        qwen_process.terminate()
-        sys.exit(0)
-
+    except SystemExit:
+        # Catch intentional exits (like missing env vars) so they don't get swallowed
+        raise
     except Exception as e:
         logger.error(f"Fatal error: {e}", exc_info=True)
         sys.exit(1)
+    finally:
+        if "agent" in locals() and hasattr(agent, "close"):
+            agent.close()
+        if "qwen_process" in locals():
+            qwen_process.terminate()
 
 
 if __name__ == "__main__":
+    print("🔧 X-RAY: main.py is successfully executing!")
     main()

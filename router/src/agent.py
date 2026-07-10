@@ -1,4 +1,4 @@
-"""Core routing agent with Qwen API client"""
+"""Core routing agent with Qwen API client and Dynamic Procurement"""
 
 import os
 import logging
@@ -6,6 +6,7 @@ from typing import Dict, Any, Tuple
 
 from .qwen_client import QwenClient
 from .clients.fireworks import FireworksClient
+from .qwen_router import ModelRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -19,29 +20,61 @@ class RoutingAgent:
         )
         self.metrics = {"total_queries": 0, "local_queries": 0, "fireworks_queries": 0}
 
-    def _call_fireworks(self, prompt: str, tier: str) -> Tuple[str, int, float]:
-        """Call Fireworks API with appropriate model"""
-        try:
-            # Select model based on tier
-            if tier == "cheap":
-                model_id = "glm-5p1"  # Cheapest allowed model
+        # Initialize dynamic model procurement
+        self._initialize_models()
+
+    def _initialize_models(self):
+        """Load ALLOWED_MODELS, cross-reference registry, and sort by capability"""
+        registry = ModelRegistry()
+        env_models = os.environ.get("ALLOWED_MODELS", "glm-5p1,deepseek-v4-pro")
+        model_ids = [m.strip() for m in env_models.split(",") if m.strip()]
+
+        self.available_models = []
+        for m_id in model_ids:
+            model = registry.get_model(m_id)
+            if model:
+                self.available_models.append(model)
             else:
-                model_id = "deepseek-v4-pro"  # Most capable
+                # Safe fallback if a model is in .env but missing from our registry
+                logger.warning(
+                    f"Model {m_id} missing from registry. Assigning default fallback score."
+                )
+                self.available_models.append(
+                    {
+                        "id": m_id,
+                        "display_name": m_id.upper(),
+                        "cost_per_1k_input": 0.001,
+                        "cost_per_1k_output": 0.001,
+                        "capability_score": 0.8,  # Assume medium-high capability
+                    }
+                )
 
-            # Get model profile from registry
-            from .qwen_router import ModelRegistry
+        # The Magic: Sort from weakest/cheapest to strongest/most expensive
+        self.available_models.sort(key=lambda x: x.get("capability_score", 0.0))
+        logger.info(
+            f"Loaded {len(self.available_models)} allowed models, sorted by capability."
+        )
 
-            registry = ModelRegistry()
-            model = registry.get_model(model_id)
+    def _select_model(self, score: float) -> Dict:
+        """Map Qwen's complexity score (0.3 to 1.0) to the sorted model array"""
+        if not self.available_models:
+            raise ValueError("No models available for routing")
 
-            if not model:
-                logger.error(f"Model {model_id} not found")
-                return f"Error: Model {model_id} not found", 0, 0.0
+        # Normalize the score window (0.3 -> 1.0 becomes 0.0 -> 1.0)
+        normalized_score = max(0.0, (score - 0.3) / 0.7)
 
-            # Call Fireworks
+        # Calculate array index based on score percentage
+        index = int(normalized_score * len(self.available_models))
+        # Ensure we don't go out of bounds if score is exactly 1.0
+        index = min(len(self.available_models) - 1, index)
+
+        return self.available_models[index]
+
+    def _call_fireworks(self, prompt: str, model: Dict) -> Tuple[str, int, float]:
+        """Execute the prompt on the dynamically selected Fireworks model"""
+        try:
             response = self.fireworks.generate(model, prompt, max_tokens=2048)
 
-            # Calculate cost
             from .metrics.counter import calculate_cost
 
             cost = calculate_cost(
@@ -50,7 +83,6 @@ class RoutingAgent:
                 model["cost_per_1k_input"],
                 model["cost_per_1k_output"],
             )
-
             return response.text, response.total_tokens, cost
 
         except Exception as e:
@@ -61,44 +93,44 @@ class RoutingAgent:
         self.metrics["total_queries"] += 1
 
         try:
-            # 1. Classify via Qwen API
+            # 1. Gatekeeper Classification via Qwen API
             classification = self.qwen.classify(prompt)
             score = float(classification.get("text", "0.5").strip() or "0.5")
             logger.info(f"Classification score: {score:.2f}")
 
-            # 2. Route based on score
+            # 2. Autonomous Routing Logic
             if score < 0.3:
-                # Simple → Qwen local (0 tokens!)
+                # Qwen knows it can solve this easily -> Local Execution (Zero Token Cost)
                 response = self.qwen.generate(prompt)
-                model = "Qwen (local)"
+                model_used = "Qwen (local)"
                 tokens = 0
                 cost = 0.0
                 self.metrics["local_queries"] += 1
-                logger.info(f"📌 ROUTE: local - Simple query (score: {score:.2f})")
-
-            elif score < 0.6:
-                # Medium → Compress → Fireworks cheap
-                compressed = self.qwen.compress(prompt)
-                response, tokens, cost = self._call_fireworks(compressed, "cheap")
-                model = "Fireworks (cheap)"
-                self.metrics["fireworks_queries"] += 1
                 logger.info(
-                    f"📌 ROUTE: fireworks_cheap - Medium query (score: {score:.2f})"
+                    f"📌 ROUTE: local - Zero cost execution (score: {score:.2f})"
                 )
 
             else:
-                # Complex → Refine → Fireworks top
-                refined = self.qwen.refine(prompt)
-                response, tokens, cost = self._call_fireworks(refined, "top")
-                model = "Fireworks (top)"
-                self.metrics["fireworks_queries"] += 1
+                # Complex Prompt -> Procure Model -> Compress -> External Execution
+                selected_model = self._select_model(score)
+                model_id = selected_model["id"]
                 logger.info(
-                    f"📌 ROUTE: fireworks_top - Complex query (score: {score:.2f})"
+                    f"📌 ROUTE: fireworks - Score {score:.2f} dynamically mapped to {model_id}"
                 )
+
+                # Universal Compression to slash token costs
+                compressed_prompt = self.qwen.compress(prompt)
+
+                # Execute on external API
+                response, tokens, cost = self._call_fireworks(
+                    compressed_prompt, selected_model
+                )
+                model_used = selected_model.get("display_name", model_id)
+                self.metrics["fireworks_queries"] += 1
 
             return {
                 "response": response,
-                "model": model,
+                "model": model_used,
                 "tokens": tokens,
                 "cost": cost,
                 "success": True,
