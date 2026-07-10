@@ -1,6 +1,7 @@
 """Core routing agent with Qwen API client and Dynamic Procurement"""
 
 import os
+import re
 import logging
 from typing import Dict, Any, Tuple
 
@@ -18,7 +19,13 @@ class RoutingAgent:
             api_key=os.environ.get("FIREWORKS_API_KEY"),
             base_url=os.environ.get("FIREWORKS_BASE_URL"),
         )
-        self.metrics = {"total_queries": 0, "local_queries": 0, "fireworks_queries": 0}
+        self.metrics = {
+            "total_queries": 0,
+            "local_queries": 0,
+            "fireworks_queries": 0,
+            "total_tokens": 0,
+            "total_cost": 0.0,
+        }
 
         # Initialize dynamic model procurement
         self._initialize_models()
@@ -83,6 +90,11 @@ class RoutingAgent:
                 model["cost_per_1k_input"],
                 model["cost_per_1k_output"],
             )
+
+            # Accumulate metrics for the dashboard
+            self.metrics["total_tokens"] += response.total_tokens
+            self.metrics["total_cost"] += cost
+
             return response.text, response.total_tokens, cost
 
         except Exception as e:
@@ -95,8 +107,18 @@ class RoutingAgent:
         try:
             # 1. Gatekeeper Classification via Qwen API
             classification = self.qwen.classify(prompt)
-            score = float(classification.get("text", "0.5").strip() or "0.5")
-            logger.info(f"Classification score: {score:.2f}")
+            raw_text = classification.get("text", "0.5").strip()
+
+            # X-RAY Regex: Surgically extract only the numbers, ignoring words
+            numbers = re.findall(r"[\d.]+", raw_text)
+            score = float(numbers[0]) if numbers else 0.5
+
+            # Clamp the score strictly between 0.0 and 1.0
+            score = min(1.0, max(0.0, score))
+
+            logger.info(
+                f"🔍 X-RAY: Raw Qwen Output: '{raw_text}' -> Parsed Score: {score:.2f}"
+            )
 
             # 2. Autonomous Routing Logic
             if score < 0.3:
